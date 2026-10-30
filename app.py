@@ -2,16 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import psycopg2
 from psycopg2 import Error
-from qiskit import QuantumCircuit
-from qiskit.visualization import circuit_drawer
-
-# Crear un circuito de entrelazamiento (Estado de Bell)
-qc = QuantumCircuit(2)
-qc.h(0)
-qc.cx(0, 1)
-
-# Imprimir el circuito en texto dentro de la terminal
-print(qc.draw('text'))
+from cuantico import generar_clave_bb84, cifrar_password_xor  # <--- Importación de la función cuántica
 
 # ---------------------------------------------------------
 # Conexión a PostgreSQL
@@ -20,11 +11,11 @@ def conectar_db():
     try:
         conexion = psycopg2.connect(
             host="localhost",
-            port="5433",
+            port="5433",          # Nota: Usa 5432 en la laptop o 5433 según corresponda
             user="postgres",
             password="12345678",
             database="sistema_usuarios",
-            client_encoding="utf-8"  # <--- Agrega esta línea
+            client_encoding="utf-8"
         )
         return conexion
     except Error as e:
@@ -91,25 +82,41 @@ class AppUsuarios:
         email = self.entry_email.get().strip()
         usuario = self.entry_usuario.get().strip()
         password = self.entry_password.get().strip()
-
-        if not nombre or not email or not usuario or not password:
-            messagebox.showwarning("Advertencia", "Todos los campos son obligatorios.")
+        
+        if not (nombre and email and usuario and password):
+            messagebox.showwarning("Campos vacíos", "Por favor llena todos los campos.")
             return
+
+        # --- INTEGRACIÓN CUÁNTICA BB84 & CIFRADO ---
+        # 1. Generamos la clave cuántica (128 bits para asegurar longitud)
+        clave_bb84 = generar_clave_bb84(num_bits=128)
+        
+        # 2. Ciframos la contraseña usando la clave BB84
+        password_cifrada = cifrar_password_xor(password, clave_bb84)
+        # -------------------------------------------
 
         db = conectar_db()
         if db:
             try:
                 cursor = db.cursor()
-                sql = "INSERT INTO usuarios (nombre, email, usuario, password) VALUES (%s, %s, %s, %s)"
-                valores = (nombre, email, usuario, password)
-                cursor.execute(sql, valores)
+                # Incluimos la columna 'clave_qkd' en el INSERT
+                query = """
+                    INSERT INTO usuarios (nombre, email, usuario, password, clave_qkd)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                # Pasamos 'password_cifrada' y 'clave_bb84'
+                cursor.execute(query, (nombre, email, usuario, password_cifrada, clave_bb84))
                 db.commit()
                 
-                messagebox.showinfo("Éxito", "¡Usuario registrado correctamente!")
+                messagebox.showinfo(
+                    "Éxito", 
+                    f"Usuario registrado correctamente con protección BB84.\n\n"
+                    f"Contraseña Cifrada: {password_cifrada[:15]}...\n"
+                    f"Clave QKD: {clave_bb84[:15]}..."
+                )
                 self.mostrar_pantalla_login()
-            except Error as e:
-                db.rollback()
-                messagebox.showerror("Error", f"No se pudo registrar el usuario:\n{e}")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo registrar:\n{e}")
             finally:
                 cursor.close()
                 db.close()
@@ -138,15 +145,12 @@ class AppUsuarios:
 
         tk.Button(self.container, text="¿No tienes cuenta? Regístrate aquí", fg="blue", bd=0, 
                   cursor="hand2", command=self.mostrar_pantalla_registro).pack(pady=5)
-        
-        
-            
 
     def validar_login(self):
         usuario = self.entry_login_usuario.get().strip()
-        password = self.entry_login_password.get().strip()
+        password_ingresada = self.entry_login_password.get().strip()
 
-        if not usuario or not password:
+        if not usuario or not password_ingresada:
             messagebox.showwarning("Advertencia", "Ingresa usuario y contraseña.")
             return
 
@@ -154,12 +158,22 @@ class AppUsuarios:
         if db:
             try:
                 cursor = db.cursor()
-                sql = "SELECT nombre FROM usuarios WHERE usuario = %s AND password = %s"
-                cursor.execute(sql, (usuario, password))
+                # 1. Consultamos el nombre, la contraseña cifrada y la clave_qkd del usuario
+                sql = "SELECT nombre, password, clave_qkd FROM usuarios WHERE usuario = %s"
+                cursor.execute(sql, (usuario,))
                 resultado = cursor.fetchone()
 
                 if resultado:
-                    messagebox.showinfo("Bienvenido", f"¡Bienvenido de nuevo, {resultado[0]}!")
+                    nombre, password_bd, clave_qkd = resultado
+                    
+                    # 2. Ciframos la contraseña ingresada usando la clave QKD almacenada
+                    password_ingresada_cifrada = cifrar_password_xor(password_ingresada, clave_qkd)
+                    
+                    # 3. Comparamos las dos cadenas cifradas
+                    if password_ingresada_cifrada == password_bd:
+                        messagebox.showinfo("Bienvenido", f"¡Bienvenido de nuevo, {nombre}!")
+                    else:
+                        messagebox.showerror("Error", "Usuario o contraseña incorrectos.")
                 else:
                     messagebox.showerror("Error", "Usuario o contraseña incorrectos.")
             except Error as e:
